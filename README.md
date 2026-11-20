@@ -28,19 +28,30 @@ re-plans when something fails. She will tell you when a request is a bad idea.
 Requires Rust 1.78+ (build from source; a static binary is produced).
 
 ```bash
-git clone <this repo> hasty && cd hasty
+cargo install --git https://github.com/prettycashless/HastyCode.git --locked
+hasty
+```
+
+Or from a checkout:
+
+```bash
+git clone https://github.com/prettycashless/HastyCode.git hasty && cd hasty
 cargo build --release
 install -m755 target/release/hasty ~/.local/bin/hasty   # or any PATH dir
 hasty
 ```
+
+On Android, inside Termux: `pkg install rust git`, then the `cargo install`
+line above. Hasty detects Termux and starts in
+[plain mode](#plain-mode-phones-ssh-and-no-mouse) automatically.
 
 First launch runs the setup wizard. Windows, macOS and Linux are supported;
 see [Platform notes](#platform-notes).
 
 ## First-run setup
 
-1. **Provider** — OpenAI, Anthropic, Google, OpenRouter, local Ollama, or any
-   OpenAI-compatible endpoint (custom base URL).
+1. **Provider** — OpenAI, Anthropic, Google, OpenRouter, Groq, Mistral, local
+   Ollama, or any OpenAI-compatible endpoint (custom base URL).
 2. **API key** — pasted masked, validated with a real request. Never printed.
 3. **Model** — fetched from the provider; pick the main model.
 4. **Permission mode** — *Ask every time* (default) or *Full access*. Both are
@@ -54,6 +65,28 @@ available, and always into an AES-256-GCM encrypted vault at
 `~/.hasty/vault.json` (mode `0600`). The vault key is derived from a machine id
 plus a random salt, so copying the file to another machine does not reveal it.
 On Windows the encrypted file is used.
+
+## Plain mode (phones, ssh, and no mouse)
+
+`hasty --plain` is a line-based front end with no raw mode, no alternate
+screen, no mouse and no Esc/Ctrl/arrow keys. It is chosen automatically when
+Hasty runs under Termux or when its output is not a terminal; `--tui` forces
+the full-screen UI instead.
+
+- Everything is typed. Menus take a number; Enter confirms.
+- `> ` is the prompt. A task is just a line of text.
+- Every command from the table below that affects the session has a plain
+text form: `/model`, `/permission`, `/clear`, `/compact`, `/memory`,
+`/remember`, `/stop`, `/help`, `/exit`.
+- `/stop` or Ctrl+C interrupts the running turn. Input typed while a turn
+  runs is queued.
+- Tool calls print one line each; failures and diffs print indented under
+them.
+- Terminal scrollback, copy and paste work as they normally do, because the
+  screen is never taken over.
+
+`hasty setup --plain` runs the whole setup as numbered questions, so a phone
+can configure a key without the full-screen wizard.
 
 ## Interface
 
@@ -293,6 +326,8 @@ cargo clippy --all-targets
 - Windows: encrypted vault only (no keychain CLI), `cmd /C` for commands,
   `start` for `open_app`. Terminal must support ANSI and mouse reporting
   (Windows Terminal does; the legacy console does not).
+- Termux/Android: file vault only (no `secret-tool`), plain mode by default.
+  Shell commands run with `sh -c`.
 - No local build tools are required: SQLite is vendored.
 - Terminal size: works from 80×24; the wordmark shortens on short terminals.
 

@@ -2,7 +2,8 @@
 //!
 //! All providers are normalized into [`Message`] / [`ToolSpec`] / [`StreamEvent`].
 //! Three wire shapes are implemented: OpenAI-compatible (OpenAI, OpenRouter,
-//! Ollama, custom endpoints), Anthropic Messages, and Google generateContent.
+//! Groq, Mistral, Ollama, custom endpoints), Anthropic Messages, and Google
+//! generateContent.
 //!
 //! Requests never leave the machine except to the configured provider.
 
@@ -20,6 +21,8 @@ pub const PROVIDERS: &[(&str, &str)] = &[
     ("anthropic", "Anthropic"),
     ("google", "Google"),
     ("openrouter", "OpenRouter"),
+    ("groq", "Groq"),
+    ("mistral", "Mistral"),
     ("ollama", "Local (Ollama)"),
     ("custom", "Custom OpenAI-compatible"),
 ];
@@ -45,6 +48,8 @@ pub fn default_base(id: &str) -> &'static str {
         "anthropic" => "https://api.anthropic.com/v1",
         "google" => "https://generativelanguage.googleapis.com/v1beta",
         "openrouter" => "https://openrouter.ai/api/v1",
+        "groq" => "https://api.groq.com/openai/v1",
+        "mistral" => "https://api.mistral.ai/v1",
         "ollama" => "http://localhost:11434/v1",
         _ => "https://api.openai.com/v1",
     }
@@ -59,6 +64,8 @@ pub fn default_model(id: &str) -> &'static str {
         "anthropic" => "claude-sonnet-4-5",
         "google" => "gemini-2.5-pro",
         "openrouter" => "anthropic/claude-sonnet-4.5",
+        "groq" => "llama-3.3-70b-versatile",
+        "mistral" => "mistral-large-latest",
         "ollama" => "qwen2.5-coder",
         _ => "gpt-5",
     }
@@ -1690,6 +1697,18 @@ mod tests {
         assert_eq!(classify(429, "rate limit"), ErrorKind::RateLimit);
         assert_eq!(classify(503, "oops"), ErrorKind::Server);
         assert_eq!(classify(400, "bad tool schema"), ErrorKind::BadRequest);
+    }
+
+    #[test]
+    fn knows_groq_and_mistral() {
+        assert_eq!(default_base("groq"), "https://api.groq.com/openai/v1");
+        assert_eq!(default_base("mistral"), "https://api.mistral.ai/v1");
+        assert_eq!(kind_of("groq"), Kind::OpenAiCompatible);
+        assert_eq!(kind_of("mistral"), Kind::OpenAiCompatible);
+        assert!(needs_key("groq"));
+        assert!(needs_key("mistral"));
+        assert!(PROVIDERS.iter().any(|(id, _)| *id == "groq"));
+        assert!(PROVIDERS.iter().any(|(id, _)| *id == "mistral"));
     }
 
     #[test]

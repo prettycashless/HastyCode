@@ -1,3 +1,4 @@
+use std::io::IsTerminal;
 use std::process::ExitCode;
 
 use hasty::commands;
@@ -5,6 +6,7 @@ use hasty::config::Config;
 use hasty::db::Store;
 use hasty::paths;
 use hasty::personality;
+use hasty::plain;
 use hasty::providers;
 use hasty::secrets::Secrets;
 use hasty::tui::{self, App};
@@ -22,7 +24,14 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    let force_tui = raw.iter().any(|arg| arg == "--tui");
+    let asked_plain = raw.iter().any(|arg| arg == "--plain" || arg == "--simple");
+    let args: Vec<String> = raw
+        .iter()
+        .filter(|arg| *arg != "--plain" && *arg != "--simple" && *arg != "--tui")
+        .cloned()
+        .collect();
     let first = args.first().map(|s| s.as_str()).unwrap_or("");
 
     match first {
@@ -58,6 +67,18 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     let store = Store::open_default()?;
 
     let force_setup = first == "setup";
+    let fresh = matches!(first, "--new" | "-n" | "new");
+    // Termux soft keyboards have no Esc, Ctrl or arrows, and a full-screen UI
+    // cannot be used without them; piped output cannot host one either.
+    let plain_mode = !force_tui
+        && (asked_plain
+            || std::env::var_os("TERMUX_VERSION").is_some()
+            || !std::io::stdout().is_terminal());
+    if plain_mode {
+        drop(store);
+        plain::run(cfg, secrets, fresh, force_setup)?;
+        return Ok(ExitCode::SUCCESS);
+    }
     let (cfg, secrets) = if !cfg.onboarded || force_setup {
         match wizard::run(cfg, secrets)? {
             Some(pair) => pair,
@@ -71,7 +92,6 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     };
     drop(store);
 
-    let fresh = matches!(first, "--new" | "-n" | "new");
     run_tui(cfg, secrets, fresh)
 }
 
@@ -200,7 +220,10 @@ fn print_help() {
 USAGE
   hasty                     resume this directory's last session, or start one
   hasty --new               start a fresh session
-  hasty setup               re-run the setup wizard
+  hasty --plain             text mode: typed menus, no mouse, no Esc/arrows
+                            (automatic on Termux and when output is piped)
+  hasty --tui               force the full-screen UI
+  hasty setup [--plain]     re-run setup, in the UI or as plain text
   hasty sessions            list saved sessions
   hasty export [file] [--session <id>]
                             export session data as JSON

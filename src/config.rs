@@ -13,7 +13,8 @@ pub const CONFIG_VERSION: u32 = 1;
 /// A provider account the user configured.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderConfig {
-    /// One of: openai, anthropic, google, openrouter, ollama, custom.
+    /// One of: openai, anthropic, google, openrouter, groq, mistral, ollama,
+    /// custom.
     pub id: String,
     /// Base URL override (required for `custom`, optional elsewhere).
     #[serde(default)]

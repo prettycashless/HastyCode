@@ -12,6 +12,7 @@ pub mod memory;
 pub mod paths;
 pub mod permissions;
 pub mod personality;
+pub mod plain;
 pub mod providers;
 pub mod secrets;
 pub mod skills;
