@@ -298,4 +298,4 @@ cargo clippy --all-targets
 
 ## License
 
-No license has been chosen yet. See [LICENSE](LICENSE) (placeholder).
+MIT. See [LICENSE](LICENSE).
