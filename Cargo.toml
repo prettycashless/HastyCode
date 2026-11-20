@@ -1,0 +1,41 @@
+[package]
+name = "hasty"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.78"
+description = "Hasty — a terminal-only AI coding agent"
+license-file = "LICENSE"
+readme = "README.md"
+
+[lib]
+name = "hasty"
+path = "src/lib.rs"
+
+[[bin]]
+name = "hasty"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+aes-gcm = "0.10"
+sha2 = "0.10"
+rand = "0.8"
+base64 = "0.22"
+similar = "2"
+dirs = "5"
+uuid = { version = "1", features = ["v4"] }
+regex = "1"
+unicode-width = "0.2"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[profile.release]
+opt-level = 2
+lto = "thin"
+strip = true
