@@ -131,12 +131,14 @@ pub fn run(
         ) {
             Ok(reply) => {
                 report = reply.text.clone();
-                if !report.trim().is_empty() {
-                    messages.push(Message::assistant(report.clone()));
-                }
                 if reply.tool_calls.is_empty() {
+                    if !report.trim().is_empty() {
+                        messages.push(Message::assistant(report.clone()));
+                    }
                     break;
                 }
+                // One assistant turn carries both the text and the tool calls;
+                // pushing the text separately duplicated it in every request.
                 messages.push(Message::assistant_tools(
                     reply.text,
                     reply.tool_calls.clone(),
@@ -261,7 +263,7 @@ fn subagent_tools(mode: Mode) -> Vec<ToolSpec> {
         .into_iter()
         .filter(|spec| {
             let allowed = match spec.name.as_str() {
-                "read_file" | "list_dir" | "glob" | "grep" | "use_skill" => true,
+                "read_file" | "list_dir" | "glob" | "grep" | "use_skill" | "remember" => true,
                 "write_file" | "edit_file" => mode == Mode::FullAccess,
                 "run_command" | "git" => mode == Mode::FullAccess,
                 _ => false,

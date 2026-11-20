@@ -37,6 +37,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         "export" => return export(&args[1..]),
         "sessions" => return list_sessions(),
         "delete" => return delete(&args[1..]),
+        "--new" | "-n" | "new" => {}
         "setup" => {}
         "" => {}
         other => {
@@ -70,38 +71,52 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     };
     drop(store);
 
-    run_tui(cfg, secrets)
+    let fresh = matches!(first, "--new" | "-n" | "new");
+    run_tui(cfg, secrets, fresh)
 }
 
 fn ioerr(message: String) -> std::io::Error {
     std::io::Error::other(message)
 }
 
-fn run_tui(cfg: Config, secrets: Secrets) -> Result<ExitCode, Box<dyn std::error::Error>> {
+fn run_tui(
+    cfg: Config,
+    secrets: Secrets,
+    fresh: bool,
+) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let store = Store::open_default()?;
     let root = std::env::current_dir()?;
     let cwd = root.to_string_lossy().to_string();
-    let session = store.create_session("", &cwd, &cfg.provider, &cfg.model)?;
+    // Continue the last session that ran in this directory unless a new one was
+    // requested; sessions keep their own provider, model and working directory.
+    let previous = if fresh {
+        None
+    } else {
+        store.latest_session_for_cwd(&cwd).unwrap_or(None)
+    };
+    let created = previous.is_none();
+    let session = match previous {
+        Some(session) => session,
+        None => store.create_session("", &cwd, &cfg.provider, &cfg.model)?,
+    };
     let session_id = session.id.clone();
-    let app = App::new(
-        cfg,
-        secrets,
-        store,
-        root,
-        session.id,
-        Vec::new(),
-        String::new(),
-    )?;
+    let title = session.title.clone();
+    let mut app = App::new(cfg, secrets, store, root, session.id, Vec::new(), title)?;
+    if !created {
+        app.resume_session(&session_id);
+    }
     tui::run(app)?;
     // Opening Hasty and leaving without sending anything should not leave an
     // empty session behind.
-    if let Ok(check) = Store::open_default() {
-        if check
-            .messages(&session_id)
-            .map(|messages| messages.is_empty())
-            .unwrap_or(false)
-        {
-            let _ = check.delete_session(&session_id);
+    if created {
+        if let Ok(check) = Store::open_default() {
+            if check
+                .messages(&session_id)
+                .map(|messages| messages.is_empty())
+                .unwrap_or(false)
+            {
+                let _ = check.delete_session(&session_id);
+            }
         }
     }
     Ok(ExitCode::SUCCESS)
@@ -135,7 +150,10 @@ fn list_sessions() -> Result<ExitCode, Box<dyn std::error::Error>> {
         println!("No sessions yet.");
         return Ok(ExitCode::SUCCESS);
     }
-    println!("{:<38}  {:<30}  {:<24}  messages", "id", "title", "model");
+    println!(
+        "{:<38}  {:<30}  {:<24}  {:>7}  tokens",
+        "id", "title", "model", "messages"
+    );
     for session in sessions {
         let count = store.messages(&session.id).map(|m| m.len()).unwrap_or(0);
         let title = if session.title.is_empty() {
@@ -144,11 +162,13 @@ fn list_sessions() -> Result<ExitCode, Box<dyn std::error::Error>> {
             session.title.chars().take(30).collect()
         };
         println!(
-            "{:<38}  {:<30}  {:<24}  {}",
+            "{:<38}  {:<30}  {:<24}  {:>7}  {}/{}",
             session.id,
             title,
             format!("{}:{}", session.provider, session.model),
-            count
+            count,
+            session.input_tokens,
+            session.output_tokens
         );
     }
     Ok(ExitCode::SUCCESS)
@@ -178,7 +198,8 @@ fn print_help() {
         "hasty {VERSION} — a terminal-only AI coding agent
 
 USAGE
-  hasty                     start the TUI (runs setup on first launch)
+  hasty                     resume this directory's last session, or start one
+  hasty --new               start a fresh session
   hasty setup               re-run the setup wizard
   hasty sessions            list saved sessions
   hasty export [file] [--session <id>]
@@ -189,7 +210,8 @@ USAGE
 
 FILES
   {}  settings
-  {}  sessions and messages (SQLite)
+  {}  sessions, messages and usage (SQLite)
+  {}  durable memory notes
   {}  encrypted key vault
   {}  her personality
 
@@ -197,6 +219,7 @@ Providers: {}
 ",
         paths::config_file().display(),
         paths::db_file().display(),
+        hasty::memory::memory_dir().display(),
         paths::vault_file().display(),
         personality::path().display(),
         providers::PROVIDERS

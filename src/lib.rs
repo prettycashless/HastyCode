@@ -8,6 +8,7 @@ pub mod agent;
 pub mod commands;
 pub mod config;
 pub mod db;
+pub mod memory;
 pub mod paths;
 pub mod permissions;
 pub mod personality;

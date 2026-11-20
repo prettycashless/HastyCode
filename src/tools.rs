@@ -248,6 +248,18 @@ pub fn specs() -> Vec<ToolSpec> {
             }),
         ),
         spec(
+            "remember",
+            "Save a durable note to local memory. Notes are read back into your system prompt in later sessions. Use it for user preferences, agreed decisions and pitfalls worth keeping; never for secrets.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "The note, one or two sentences"},
+                    "scope": {"type": "string", "enum": ["project", "global"], "description": "project (default) is tied to this directory; global applies everywhere"}
+                },
+                "required": ["text"]
+            }),
+        ),
+        spec(
             "finish",
             "Finish the task. Call this only after verifying the result.",
             json!({
@@ -336,6 +348,7 @@ pub fn summarize(name: &str, args: &Value) -> String {
         "web_fetch" => format!("fetch {}", s("url")),
         "use_skill" => format!("load skill {}", s("name")),
         "spawn_subagent" => format!("subagent {}", s("name")),
+        "remember" => format!("remember {}", one_line(s("text"), 80)),
         "finish" => "finish".to_string(),
         other => other.to_string(),
     }
@@ -358,6 +371,7 @@ pub fn execute(ctx: &ToolContext, name: &str, args: &Value, interrupt: &AtomicBo
         "git" => git(ctx, args, interrupt),
         "web_fetch" => web_fetch(args, interrupt),
         "use_skill" => use_skill(ctx, args),
+        "remember" => remember(ctx, args),
         "finish" => ToolOutcome::ok(args["summary"].as_str().unwrap_or("done")),
         "spawn_subagent" => ToolOutcome::err("spawn_subagent is handled by the agent loop"),
         other => ToolOutcome::err(format!("unknown tool `{other}`")),
@@ -1106,7 +1120,14 @@ fn open_app(args: &Value) -> ToolOutcome {
 
 fn git(ctx: &ToolContext, args: &Value, interrupt: &AtomicBool) -> ToolOutcome {
     let git_args = args["args"].as_str().unwrap_or_default();
-    if git_args.contains(';') || git_args.contains('|') || git_args.contains('&') {
+    // This string reaches a shell, so anything that could start another
+    // command (or read a file into one) is refused rather than escaped.
+    if git_args.chars().any(|ch| {
+        matches!(
+            ch,
+            ';' | '|' | '&' | '$' | '`' | '<' | '>' | '(' | ')' | '\n' | '\r'
+        )
+    }) {
         return ToolOutcome::err("git tool takes plain git arguments only");
     }
     let command = format!("git {git_args}");
@@ -1203,6 +1224,26 @@ pub fn html_to_text(html: &str) -> String {
         .join("\n")
         .trim()
         .to_string()
+}
+
+/// `remember` writes only inside Hasty's own memory directory, never the project,
+/// so it needs no path permission.
+fn remember(ctx: &ToolContext, args: &Value) -> ToolOutcome {
+    let text = args["text"].as_str().unwrap_or_default();
+    let scope = crate::memory::Scope::parse(args["scope"].as_str().unwrap_or_default());
+    match crate::memory::remember(&ctx.root, text, scope) {
+        Ok((path, crate::memory::Saved::New)) => ToolOutcome::ok(format!(
+            "Saved to {} memory: {}",
+            scope.label(),
+            path.display()
+        )),
+        Ok((path, crate::memory::Saved::Duplicate)) => ToolOutcome::ok(format!(
+            "Already saved in {} memory: {}",
+            scope.label(),
+            path.display()
+        )),
+        Err(err) => ToolOutcome::err(err),
+    }
 }
 
 fn use_skill(ctx: &ToolContext, args: &Value) -> ToolOutcome {

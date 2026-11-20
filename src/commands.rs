@@ -65,6 +65,16 @@ pub fn all() -> Vec<CommandInfo> {
             description: "Summarize the context to save tokens",
         },
         CommandInfo {
+            name: "/memory",
+            args: "",
+            description: "Show saved project and global memory",
+        },
+        CommandInfo {
+            name: "/remember",
+            args: "<note|global: note>",
+            description: "Save a durable note to memory",
+        },
+        CommandInfo {
             name: "/init",
             args: "",
             description: "Write project notes (HASTY.md)",

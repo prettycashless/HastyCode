@@ -10,6 +10,7 @@ use reqwest::blocking::{Client as HttpClient, Response};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader};
 use std::time::Duration;
@@ -705,34 +706,42 @@ impl Client {
         interrupt: &dyn Fn() -> bool,
         on_event: &mut dyn FnMut(StreamEvent),
     ) -> Result<Reply, ProviderError> {
+        // Track whether anything was rendered: retrying after a stream failed
+        // mid-reply would print the partial answer a second time.
+        let rendered = Cell::new(false);
+        let mut tracked = |event: StreamEvent| {
+            rendered.set(true);
+            on_event(event);
+        };
         let result = match self.kind {
             Kind::OpenAiCompatible => {
-                self.chat_openai(model, messages, tools, interrupt, on_event, true)
+                self.chat_openai(model, messages, tools, interrupt, &mut tracked, true)
             }
             Kind::Anthropic => {
-                self.chat_anthropic(model, messages, tools, interrupt, on_event, true)
+                self.chat_anthropic(model, messages, tools, interrupt, &mut tracked, true)
             }
-            Kind::Google => self.chat_google(model, messages, tools, interrupt, on_event, true),
+            Kind::Google => self.chat_google(model, messages, tools, interrupt, &mut tracked, true),
         };
 
         match result {
             // Some compatible endpoints reject `stream`. Retry once without it
             // if the failure happened before anything was rendered.
             Err(err)
-                if !matches!(
-                    err.kind,
-                    ErrorKind::Auth | ErrorKind::Interrupted | ErrorKind::RateLimit
-                ) =>
+                if !rendered.get()
+                    && !matches!(
+                        err.kind,
+                        ErrorKind::Auth | ErrorKind::Interrupted | ErrorKind::RateLimit
+                    ) =>
             {
                 let fallback = match self.kind {
                     Kind::OpenAiCompatible => {
-                        self.chat_openai(model, messages, tools, interrupt, on_event, false)
+                        self.chat_openai(model, messages, tools, interrupt, &mut tracked, false)
                     }
                     Kind::Anthropic => {
-                        self.chat_anthropic(model, messages, tools, interrupt, on_event, false)
+                        self.chat_anthropic(model, messages, tools, interrupt, &mut tracked, false)
                     }
                     Kind::Google => {
-                        self.chat_google(model, messages, tools, interrupt, on_event, false)
+                        self.chat_google(model, messages, tools, interrupt, &mut tracked, false)
                     }
                 };
                 fallback.map_err(|second| {

@@ -95,8 +95,10 @@ On Windows the encrypted file is used.
 | `/connectors` | GitHub token and other connectors |
 | `/sessions` | browse, resume (`Enter`) and delete (`d`) sessions |
 | `/sessions export` | write a JSON export of the current session |
-| `/clear` | clear conversation context (DB transcript kept) |
+| `/clear` | clear context **and** this session's stored messages |
 | `/compact` | summarize context into a summary message |
+| `/memory` | show saved project and global memory |
+| `/remember <note>` | save a durable note; `/remember global: <note>` for every project |
 | `/init` | generate `HASTY.md` project notes |
 | `/help` | keys, mouse and commands |
 | `/exit` | quit |
@@ -111,7 +113,8 @@ plan → tool call → observe → reflect → re-plan → … → verify → an
 
 - Tools: `read_file`, `write_file`, `edit_file`, `move_file`, `delete_file`,
   `make_dir`, `list_dir`, `glob`, `grep`, `run_command`, `install_package`,
-  `open_app`, `git`, `web_fetch`, `use_skill`, `spawn_subagent`, `finish`.
+  `open_app`, `git`, `web_fetch`, `use_skill`, `spawn_subagent`, `remember`,
+  `finish`.
 - Every action passes through one gate (`src/permissions.rs`). Ask mode confirms
   commands, installs, app launches, network access and **every file edit**, and
   shows the diff in the prompt before it writes. Credential paths and files
@@ -175,7 +178,8 @@ Everything is under `~/.hasty/` (override with `HASTY_HOME`):
 | File | Purpose |
 | --- | --- |
 | `config.json` | settings, provider list (no keys) |
-| `hasty.db` | SQLite: sessions, messages, tool calls, subagent runs, settings |
+| `hasty.db` | SQLite: sessions, messages, tool calls, subagent runs, usage, settings |
+| `memory/` | durable notes: `global.md` and `projects/<name>-<hash>.md` |
 | `vault.json` | AES-256-GCM encrypted keys, `0600` |
 | `personality.md` | Hasty's editable personality / system voice |
 | `skills/` | cloned skill repositories |
@@ -184,15 +188,43 @@ Everything is under `~/.hasty/` (override with `HASTY_HOME`):
 CLI maintenance:
 
 ```bash
-hasty sessions                        # list saved sessions
+hasty                                 # resume this directory's last session
+hasty --new                           # start a fresh session
+hasty sessions                        # list sessions, messages and tokens
 hasty export [file.json] [--session id]   # export everything or one session
 hasty delete <session-id|all>         # delete sessions and their messages
 hasty setup                           # re-run the wizard
 ```
 
+Starting Hasty in a directory continues that directory's most recent session:
+its history, tool calls, summary, provider, model, token totals and working
+directory all come back. `--new` starts a clean session instead. Nothing is
+shared between directories except global memory.
+
 No analytics, no crash reporting, no remote logging. The only network traffic is
 to the provider you configured, `github.com` when you install skills, and URLs
 you fetch with `web_fetch` (which asks first in Ask mode).
+
+## Memory & sessions
+
+Two different things are persisted:
+
+- **Session context** is automatic. Every user message, assistant message, tool
+  call and tool result is written to `hasty.db` under the session id, along with
+  the title, provider, model, compaction summary and token totals. Resuming a
+  session rebuilds real `assistant(tool_calls)` / `tool` pairs, so the model sees
+  its own earlier calls rather than flattened text. `/clear` deletes those rows
+  for the current session, so cleared context cannot come back on resume.
+- **Memory** is deliberate. `remember(text, scope)` and `/remember` append dated
+  notes to `~/.hasty/memory/global.md` (all projects) or
+  `~/.hasty/memory/projects/<name>-<hash>.md` (this directory). Both files are
+  included in the system prompt on later sessions, capped to the newest 8,000
+  characters. Duplicates are not written twice, one note is clipped to 2,000
+  characters, and a file is trimmed to its newest 128 KB. Notes are plain text:
+  read and edit them with `/memory` or any editor. They never leave the machine.
+
+Sessions are resumed automatically per working directory. `hasty sessions` shows
+what exists; `/sessions` resumes or deletes from inside the TUI.
 
 ## Personality
 

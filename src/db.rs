@@ -16,6 +16,10 @@ pub struct Session {
     pub provider: String,
     pub model: String,
     pub summary: String,
+    #[serde(default)]
+    pub input_tokens: u64,
+    #[serde(default)]
+    pub output_tokens: u64,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -111,6 +115,8 @@ impl Store {
                 provider    TEXT NOT NULL DEFAULT '',
                 model       TEXT NOT NULL DEFAULT '',
                 summary     TEXT NOT NULL DEFAULT '',
+                input_tokens  INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
                 created_at  INTEGER NOT NULL,
                 updated_at  INTEGER NOT NULL
             );
@@ -157,18 +163,21 @@ impl Store {
             );
             "#,
         )?;
-        self.ensure_message_columns()
+        self.ensure_columns()
     }
 
     /// Bring databases created by older builds up to the current shape. New
     /// columns are added in place so existing sessions keep working.
-    fn ensure_message_columns(&self) -> rusqlite::Result<()> {
-        let mut stmt = self.conn.prepare("PRAGMA table_info(messages)")?;
-        let existing: Vec<String> = stmt
-            .query_map([], |row| row.get::<_, String>(1))?
-            .filter_map(Result::ok)
-            .collect();
-        drop(stmt);
+    fn ensure_columns(&self) -> rusqlite::Result<()> {
+        let columns = |table: &str| -> rusqlite::Result<Vec<String>> {
+            let mut stmt = self.conn.prepare(&format!("PRAGMA table_info({table})"))?;
+            let names: Vec<String> = stmt
+                .query_map([], |row| row.get::<_, String>(1))?
+                .filter_map(Result::ok)
+                .collect();
+            Ok(names)
+        };
+        let message_columns = columns("messages")?;
         for (name, ddl) in [
             (
                 "tool_calls",
@@ -183,11 +192,26 @@ impl Store {
                 "ALTER TABLE messages ADD COLUMN name TEXT NOT NULL DEFAULT ''",
             ),
         ] {
-            if !existing.iter().any(|column| column == name) {
+            if !message_columns.iter().any(|column| column == name) {
                 self.conn.execute(ddl, [])?;
             }
         }
-        self.conn.pragma_update(None, "user_version", 2)?;
+        let session_columns = columns("sessions")?;
+        for (name, ddl) in [
+            (
+                "input_tokens",
+                "ALTER TABLE sessions ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0",
+            ),
+            (
+                "output_tokens",
+                "ALTER TABLE sessions ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0",
+            ),
+        ] {
+            if !session_columns.iter().any(|column| column == name) {
+                self.conn.execute(ddl, [])?;
+            }
+        }
+        self.conn.pragma_update(None, "user_version", 3)?;
         Ok(())
     }
 
@@ -212,6 +236,8 @@ impl Store {
             provider: provider.to_string(),
             model: model.to_string(),
             summary: String::new(),
+            input_tokens: 0,
+            output_tokens: 0,
             created_at: now,
             updated_at: now,
         })
@@ -220,7 +246,8 @@ impl Store {
     pub fn session(&self, id: &str) -> rusqlite::Result<Option<Session>> {
         self.conn
             .query_row(
-                "SELECT id, title, cwd, provider, model, summary, created_at, updated_at
+                "SELECT id, title, cwd, provider, model, summary, input_tokens, output_tokens,
+                        created_at, updated_at
                  FROM sessions WHERE id = ?1",
                 params![id],
                 row_to_session,
@@ -231,9 +258,23 @@ impl Store {
     pub fn latest_session(&self) -> rusqlite::Result<Option<Session>> {
         self.conn
             .query_row(
-                "SELECT id, title, cwd, provider, model, summary, created_at, updated_at
-                 FROM sessions ORDER BY updated_at DESC LIMIT 1",
+                "SELECT id, title, cwd, provider, model, summary, input_tokens, output_tokens,
+                        created_at, updated_at
+                 FROM sessions ORDER BY updated_at DESC, rowid DESC LIMIT 1",
                 [],
+                row_to_session,
+            )
+            .optional()
+    }
+
+    /// Most recent session that ran in this directory, for auto-resume.
+    pub fn latest_session_for_cwd(&self, cwd: &str) -> rusqlite::Result<Option<Session>> {
+        self.conn
+            .query_row(
+                "SELECT id, title, cwd, provider, model, summary, input_tokens, output_tokens,
+                        created_at, updated_at
+                 FROM sessions WHERE cwd = ?1 ORDER BY updated_at DESC, rowid DESC LIMIT 1",
+                params![cwd],
                 row_to_session,
             )
             .optional()
@@ -241,8 +282,9 @@ impl Store {
 
     pub fn list_sessions(&self, limit: usize) -> rusqlite::Result<Vec<Session>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, cwd, provider, model, summary, created_at, updated_at
-             FROM sessions ORDER BY updated_at DESC LIMIT ?1",
+            "SELECT id, title, cwd, provider, model, summary, input_tokens, output_tokens,
+                    created_at, updated_at
+             FROM sessions ORDER BY updated_at DESC, rowid DESC LIMIT ?1",
         )?;
         let rows = stmt.query_map(params![limit as i64], row_to_session)?;
         rows.collect()
@@ -269,6 +311,45 @@ impl Store {
         self.conn.execute(
             "UPDATE sessions SET summary = ?2, updated_at = ?3 WHERE id = ?1",
             params![id, summary, crate::config::now_secs()],
+        )?;
+        Ok(())
+    }
+
+    /// Make `/clear` durable: drop the session's stored conversation and summary
+    /// so resuming it cannot bring the cleared context back.
+    pub fn clear_messages(&self, session_id: &str) -> rusqlite::Result<usize> {
+        let removed = self.conn.execute(
+            "DELETE FROM messages WHERE session_id = ?1",
+            params![session_id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM tool_calls WHERE session_id = ?1",
+            params![session_id],
+        )?;
+        self.conn.execute(
+            "UPDATE sessions SET summary = '', updated_at = ?2 WHERE id = ?1",
+            params![session_id, crate::config::now_secs()],
+        )?;
+        Ok(removed)
+    }
+
+    /// Accumulate token usage on the session so it survives restarts.
+    pub fn add_usage(
+        &self,
+        session_id: &str,
+        input_tokens: u64,
+        output_tokens: u64,
+    ) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET input_tokens = input_tokens + ?2,
+                    output_tokens = output_tokens + ?3, updated_at = ?4
+             WHERE id = ?1",
+            params![
+                session_id,
+                input_tokens as i64,
+                output_tokens as i64,
+                crate::config::now_secs()
+            ],
         )?;
         Ok(())
     }
@@ -512,8 +593,10 @@ fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<Session> {
         provider: row.get(3)?,
         model: row.get(4)?,
         summary: row.get(5)?,
-        created_at: row.get::<_, i64>(6)?.max(0) as u64,
-        updated_at: row.get::<_, i64>(7)?.max(0) as u64,
+        input_tokens: row.get::<_, i64>(6)?.max(0) as u64,
+        output_tokens: row.get::<_, i64>(7)?.max(0) as u64,
+        created_at: row.get::<_, i64>(8)?.max(0) as u64,
+        updated_at: row.get::<_, i64>(9)?.max(0) as u64,
     })
 }
 

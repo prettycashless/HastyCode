@@ -95,10 +95,15 @@ pub enum UiEvent {
 pub enum UserAction {
     Prompt(String),
     Interrupt,
-    Permission { id: u64, allow: bool },
+    Permission {
+        id: u64,
+        allow: bool,
+    },
     Config(Box<Config>),
     ClearHistory,
     LoadHistory(Box<Vec<Message>>),
+    /// Resume switched to a session that ran in another directory.
+    SetRoot(PathBuf),
     Compact,
     Shutdown,
 }
@@ -227,9 +232,17 @@ impl Worker {
                 UserAction::ClearHistory => {
                     self.session_model = None;
                     self.history.clear();
+                    // Clearing is durable: the stored rows go too, so resuming
+                    // this session cannot restore the context just cleared.
+                    let _ = self.store.clear_messages(&self.session_id);
                     self.emit(UiEvent::ContextReset {
                         summary: "Context cleared.".into(),
                     });
+                }
+                UserAction::SetRoot(path) => {
+                    if path.is_dir() {
+                        self.root = path;
+                    }
                 }
                 UserAction::LoadHistory(messages) => {
                     self.session_model = None;
@@ -517,8 +530,12 @@ impl Worker {
             match result {
                 Ok(reply) => {
                     if !tried.is_empty() {
-                        // Remember the working model for later turns too.
+                        // Remember the working model for later turns and save it on
+                        // the session, so a resume starts from the model that worked.
                         self.session_model = Some(current.clone());
+                        let _ = self
+                            .store
+                            .touch_session(&self.session_id, None, Some(&current));
                     }
                     if reply.truncated {
                         self.emit(UiEvent::Notice(format!(
@@ -537,6 +554,11 @@ impl Worker {
                             "Using `{current}` for the rest of this turn."
                         )));
                     }
+                    let _ = self.store.add_usage(
+                        &self.session_id,
+                        reply.usage.input_tokens,
+                        reply.usage.output_tokens,
+                    );
                     self.emit(UiEvent::Usage {
                         input: reply.usage.input_tokens,
                         output: reply.usage.output_tokens,
@@ -975,6 +997,17 @@ impl Worker {
             .as_ref()
             .and_then(|reference| self.secrets.get(reference));
         let client = Client::new(&provider_id, provider.base_url.as_deref(), key);
+        // Compact with the model that answered last, not the configured one:
+        // after a failover the configured model may be the one that failed.
+        let model = self
+            .session_model
+            .clone()
+            .filter(|model| !model.is_empty())
+            .unwrap_or_else(|| self.cfg.model.clone());
+        if model.is_empty() {
+            self.emit(UiEvent::Error("No model selected. Run /model.".into()));
+            return;
+        }
 
         let mut transcript = String::new();
         for message in &self.history {
@@ -996,7 +1029,7 @@ impl Worker {
             Message::user(prompt),
         ];
         let mut sink = |_event: StreamEvent| {};
-        match client.chat(&self.cfg.model, &messages, &[], &|| false, &mut sink) {
+        match client.chat(&model, &messages, &[], &|| false, &mut sink) {
             Ok(reply) if !reply.text.trim().is_empty() => {
                 let summary = reply.text.trim().to_string();
                 let _ = self.store.set_summary(&self.session_id, &summary);

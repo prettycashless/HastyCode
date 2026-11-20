@@ -195,6 +195,57 @@ fn older_databases_gain_the_new_message_columns() {
 }
 
 #[test]
+fn clearing_a_session_is_durable() {
+    let (store, path) = temp_store();
+    let session = store
+        .create_session("t", "/tmp", "openai", "gpt-5")
+        .unwrap();
+    store.add_message(&session.id, "user", "hello", "").unwrap();
+    store.set_summary(&session.id, "a summary").unwrap();
+    let removed = store.clear_messages(&session.id).unwrap();
+    assert_eq!(removed, 1);
+    assert!(store.messages(&session.id).unwrap().is_empty());
+    let reloaded = store.session(&session.id).unwrap().unwrap();
+    assert_eq!(reloaded.summary, "");
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn latest_session_is_scoped_to_its_directory() {
+    let (store, path) = temp_store();
+    let first = store
+        .create_session("a", "/proj", "openai", "gpt-5")
+        .unwrap();
+    let second = store
+        .create_session("b", "/proj", "openai", "gpt-5")
+        .unwrap();
+    store
+        .create_session("c", "/other", "openai", "gpt-5")
+        .unwrap();
+    let latest = store.latest_session_for_cwd("/proj").unwrap().unwrap();
+    assert_eq!(latest.id, second.id);
+    assert_ne!(latest.id, first.id);
+    assert!(store.latest_session_for_cwd("/missing").unwrap().is_none());
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn usage_accumulates_on_the_session() {
+    let (store, path) = temp_store();
+    let session = store
+        .create_session("t", "/tmp", "openai", "gpt-5")
+        .unwrap();
+    store.add_usage(&session.id, 10, 5).unwrap();
+    store.add_usage(&session.id, 3, 2).unwrap();
+    let reloaded = store.session(&session.id).unwrap().unwrap();
+    assert_eq!((reloaded.input_tokens, reloaded.output_tokens), (13, 7));
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn settings_are_stored_and_replaceable() {
     let (store, path) = temp_store();
     store.set_setting("theme", "dark-red").unwrap();

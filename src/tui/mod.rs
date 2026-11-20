@@ -1055,8 +1055,53 @@ impl App {
                 self.clear_transcript();
                 self.agent.send(UserAction::ClearHistory);
                 self.push(Block::Notice(
-                    "Context cleared. The session transcript is kept in the database.".into(),
+                    "Context cleared, including this session's saved messages.".into(),
                 ));
+            }
+            "/memory" => {
+                let mut shown = false;
+                for (label, path) in crate::memory::files(&self.root) {
+                    let text = crate::memory::read(&path);
+                    if text.trim().is_empty() {
+                        continue;
+                    }
+                    shown = true;
+                    self.push(Block::Notice(format!(
+                        "{label} memory — {}\n{}",
+                        path.display(),
+                        text.trim()
+                    )));
+                }
+                if !shown {
+                    self.push(Block::Notice(format!(
+                        "No memory saved yet. Use /remember <note>; files live in {}.",
+                        crate::memory::memory_dir().display()
+                    )));
+                }
+            }
+            "/remember" => {
+                let trimmed = rest.trim();
+                let (scope, note) = match trimmed.strip_prefix("global:") {
+                    Some(note) => (crate::memory::Scope::Global, note.trim()),
+                    None => (crate::memory::Scope::Project, trimmed),
+                };
+                if note.is_empty() {
+                    self.push(Block::Error(
+                        "Usage: /remember <note>  or  /remember global: <note>".into(),
+                    ));
+                } else {
+                    match crate::memory::remember(&self.root, note, scope) {
+                        Ok((path, crate::memory::Saved::New)) => self.push(Block::Notice(format!(
+                            "Saved to {} memory ({}).",
+                            scope.label(),
+                            path.display()
+                        ))),
+                        Ok((path, crate::memory::Saved::Duplicate)) => self.push(Block::Notice(
+                            format!("Already in {} memory ({}).", scope.label(), path.display()),
+                        )),
+                        Err(err) => self.push(Block::Error(err)),
+                    }
+                }
             }
             "/compact" => {
                 self.agent.send(UserAction::Compact);
@@ -1301,6 +1346,18 @@ impl App {
             MenuItem {
                 label: "/compact".into(),
                 detail: "summarize context".into(),
+                value: String::new(),
+                enabled: false,
+            },
+            MenuItem {
+                label: "/memory".into(),
+                detail: "show saved project and global memory".into(),
+                value: String::new(),
+                enabled: false,
+            },
+            MenuItem {
+                label: "/remember".into(),
+                detail: "save a durable note (global: <note> for everywhere)".into(),
                 value: String::new(),
                 enabled: false,
             },
@@ -2019,7 +2076,7 @@ impl App {
         }));
     }
 
-    fn resume_session(&mut self, id: &str) {
+    pub fn resume_session(&mut self, id: &str) {
         let rows = match self.store.messages(id) {
             Ok(rows) => rows,
             Err(err) => {
@@ -2043,6 +2100,19 @@ impl App {
         }
         self.agent.send(UserAction::LoadHistory(Box::new(history)));
         self.blocks.truncate(1);
+        if let Some(session) = &session {
+            self.usage_in = session.input_tokens;
+            self.usage_out = session.output_tokens;
+            let dir = std::path::PathBuf::from(&session.cwd);
+            if !session.cwd.is_empty() && dir.is_dir() && dir != self.root {
+                self.root = dir.clone();
+                self.agent.send(UserAction::SetRoot(dir));
+                self.push(Block::Notice(format!(
+                    "Working directory: {}",
+                    self.root.display()
+                )));
+            }
+        }
         let mut added = 0;
         for row in &rows {
             match row.role.as_str() {

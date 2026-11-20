@@ -99,8 +99,19 @@ impl Gate {
     }
 
     pub fn check(&self, action: &Action) -> Outcome {
-        // 1. Catastrophic commands are blocked regardless of mode.
-        if let Action::RunCommand { command } = action {
+        // 1. Catastrophic commands are blocked regardless of mode. The `git`
+        // tool runs a shell command too, so it must be inspected the same way;
+        // otherwise `git push --force` would never ask in ask mode.
+        let git_command;
+        let as_command = match action {
+            Action::RunCommand { command } => Some(command.as_str()),
+            Action::Git { args } => {
+                git_command = format!("git {args}");
+                Some(git_command.as_str())
+            }
+            _ => None,
+        };
+        if let Some(command) = as_command {
             if let Some(reason) = catastrophic(command) {
                 return Outcome::Deny(reason);
             }
@@ -163,7 +174,7 @@ impl Gate {
                     Outcome::Confirm(format!("Reading outside the project: {}", path.display()))
                 }
             }
-            Action::Git { .. } => Outcome::Allow,
+            Action::Git { .. } => Outcome::Confirm("Running git".into()),
             Action::Network { .. } => Outcome::Confirm("Network access".into()),
             Action::SpawnSubagent { .. } => Outcome::Allow,
         }
@@ -337,7 +348,7 @@ pub fn risky(command: &str) -> Option<String> {
 /// `find / -delete`, `find ~ -exec rm ...` and friends.
 fn destructive_find(command: &str) -> Option<String> {
     for segment in command.split([';', '|', '&', '\n']) {
-        let tokens: Vec<&str> = segment.split_whitespace().collect();
+        let tokens = shell_words(segment);
         let Some(find_at) = tokens.iter().position(|token| {
             let t = unquote(token);
             t == "find" || t.ends_with("/find")
@@ -369,11 +380,33 @@ fn unquote(token: &str) -> &str {
     token.trim_matches('"').trim_matches('\'')
 }
 
+/// Split a shell fragment into words for detection. Grouping, command
+/// substitution and quoting become separators, so `$(rm -rf /)` is inspected
+/// as the `rm -rf /` it really is.
+fn shell_words(segment: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut word = String::new();
+    for ch in segment.chars() {
+        if ch.is_whitespace() || matches!(ch, '(' | ')' | '`' | '"' | '\'') {
+            if !word.is_empty() {
+                out.push(std::mem::take(&mut word));
+            }
+        } else {
+            word.push(ch);
+        }
+    }
+    if !word.is_empty() {
+        out.push(word);
+    }
+    out.retain(|token| token != "$");
+    out
+}
+
 /// Detect `rm -r`-style deletion aimed at `/`, `~`, `$HOME` or a bare glob.
 /// Tokenized so `rm -rf /tmp/build` stays allowed.
 fn recursive_delete_of_root(command: &str) -> Option<String> {
     for segment in command.split([';', '|', '&', '\n']) {
-        let tokens: Vec<&str> = segment.split_whitespace().collect();
+        let tokens = shell_words(segment);
         let Some(rm_at) = tokens.iter().position(|token| {
             let t = unquote(token);
             t == "rm" || t.ends_with("/rm")
@@ -528,6 +561,40 @@ mod tests {
             }),
             Outcome::Confirm(_)
         ));
+    }
+
+    #[test]
+    fn git_tool_is_gated_like_a_command() {
+        // The git tool used to be a silent allow, so a force-push never asked.
+        assert!(matches!(
+            gate(Mode::FullAccess).check(&Action::Git {
+                args: "push --force origin main".into()
+            }),
+            Outcome::Confirm(_)
+        ));
+        assert!(matches!(
+            gate(Mode::AskEveryTime).check(&Action::Git {
+                args: "status".into()
+            }),
+            Outcome::Confirm(_)
+        ));
+        assert_eq!(
+            gate(Mode::FullAccess).check(&Action::Git {
+                args: "status".into()
+            }),
+            Outcome::Allow
+        );
+    }
+
+    #[test]
+    fn command_substitution_does_not_hide_a_wipe() {
+        for cmd in [
+            "echo $(rm -rf /)",
+            "echo `rm -rf /`",
+            "echo $(find / -delete)",
+        ] {
+            assert!(catastrophic(cmd).is_some(), "{cmd} should be denied");
+        }
     }
 
     #[test]

@@ -107,10 +107,12 @@ pub fn system_prompt(
     out.push_str(
         "\n## Tools\n\
          You work with tools: read_file, write_file, edit_file, list_dir, glob, grep, run_command, \
-         install_package, open_app, git, web_fetch, use_skill, spawn_subagent.\n\
+         install_package, open_app, git, web_fetch, use_skill, spawn_subagent, remember.\n\
          Use them instead of guessing. Read a file before editing it. Prefer edit_file for targeted \
          changes and write_file for new files. Run the project's own verification commands.\n\
-         When a tool fails, inspect the error, adjust, and try a different approach.\n",
+         When a tool fails, inspect the error, adjust, and try a different approach.\n\
+         `remember` saves a durable note to local memory; those notes are shown in later sessions. \
+         Save preferences and decisions worth keeping, never secrets.\n",
     );
 
     out.push_str(
@@ -126,6 +128,16 @@ pub fn system_prompt(
             out.push_str(notes.trim());
             out.push('\n');
         }
+    }
+
+    if let Some(memory) = crate::memory::for_prompt(project_root) {
+        out.push_str("\n## Memory (saved in earlier sessions)\n");
+        out.push_str(
+            "Standing notes from the user or from you. Follow them unless the current request \
+             overrides them; add durable facts with the remember tool.\n",
+        );
+        out.push_str(&memory);
+        out.push('\n');
     }
 
     if !skill_index.trim().is_empty() {
